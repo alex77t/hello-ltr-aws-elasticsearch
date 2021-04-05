@@ -6,7 +6,9 @@ from ltr.helpers.handle_resp import resp_msg
 
 import elasticsearch.helpers
 import json
-from elasticsearch import Elasticsearch
+from elasticsearch import Elasticsearch, RequestsHttpConnection
+from requests_aws4auth import AWS4Auth
+import boto3
 
 class ElasticResp():
     def __init__(self, resp):
@@ -48,10 +50,22 @@ class ElasticClient(BaseClient):
         if self.docker:
             self.host = 'elastic'
         else:
-            self.host = 'localhost'
-
-        self.elastic_ep = 'http://{}:9200/_ltr'.format(self.host)
-        self.es = Elasticsearch('http://{}:9200'.format(self.host))
+            self.host = 'search-es-ltr-6bjfk5r7rdz6z2u3j23nysbufu.us-east-1.es.amazonaws.com'
+        
+        region = 'us-east-1'
+        service = 'es'
+        credentials = boto3.Session().get_credentials()
+        self.awsauth = AWS4Auth(credentials.access_key, credentials.secret_key, region, service, session_token=credentials.token)
+        
+        
+        self.elastic_ep = 'https://{}:443/_ltr'.format(self.host)
+        self.es = Elasticsearch(
+            hosts = [{'host': self.host, 'port': 443}],
+            http_auth = self.awsauth,
+            use_ssl = True,
+            verify_certs = True,
+            connection_class = RequestsHttpConnection
+        )
 
     def get_host(self):
         return self.host
@@ -88,13 +102,13 @@ class ElasticClient(BaseClient):
         resp_msg(msg="Streaming Bulk index DONE {}".format(index), resp=BulkResp(resp))
 
     def reset_ltr(self, index):
-        resp = requests.delete(self.elastic_ep)
+        resp = requests.delete(self.elastic_ep, auth=self.awsauth)
         resp_msg(msg="Removed Default LTR feature store".format(), resp=resp, throw=False)
-        resp = requests.put(self.elastic_ep)
+        resp = requests.put(self.elastic_ep, auth=self.awsauth)
         resp_msg(msg="Initialize Default LTR feature store".format(), resp=resp)
 
     def create_featureset(self, index, name, ftr_config):
-        resp = requests.post('{}/_featureset/{}'.format(self.elastic_ep, name), json=ftr_config)
+        resp = requests.post('{}/_featureset/{}'.format(self.elastic_ep, name), json=ftr_config, auth=self.awsauth)
         resp_msg(msg="Create {} feature set".format(name), resp=resp)
 
     def log_query(self, index, featureset, ids, params={}):
@@ -156,10 +170,10 @@ class ElasticClient(BaseClient):
         model_ep = "{}/_model/".format(self.elastic_ep)
         create_ep = "{}/_featureset/{}/_createmodel".format(self.elastic_ep, featureset)
 
-        resp = requests.delete('{}{}'.format(model_ep, model_name))
+        resp = requests.delete('{}{}'.format(model_ep, model_name), auth=self.awsauth)
         print('Delete model {}: {}'.format(model_name, resp.status_code))
 
-        resp = requests.post(create_ep, json=model_payload)
+        resp = requests.post(create_ep, json=model_payload, auth=self.awsauth)
         resp_msg(msg="Created Model {}".format(model_name), resp=resp)
 
     def submit_ranklib_model(self, featureset, index, model_name, model_payload):
@@ -215,7 +229,7 @@ class ElasticClient(BaseClient):
 
     def feature_set(self, index, name):
         resp = requests.get('{}/_featureset/{}'.format(self.elastic_ep,
-                                                      name))
+                                                      name), auth=self.awsauth)
 
         jsonResp = resp.json()
         if not jsonResp['found']:
